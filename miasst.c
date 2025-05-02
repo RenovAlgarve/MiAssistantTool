@@ -344,54 +344,52 @@ const char *validate_check(const char *md5, int flash) {
             printf("\n%s\n", json_getValue(message));
             return NULL;
         }
-    } else {
-        // ROM listing mode
-        if (json_getType(parsed_json) == JSON_OBJ) {
-            json_t const *child = json_getChild(parsed_json);
-            if (strcmp(json_getName(json_getSibling(child)), "Signup") == 0 || strcmp(json_getName(json_getSibling(child)), "VersionBoot") == 0) {
-                fprintf(stderr, "Error: Invalid data\n");
-                return NULL;
-            }
-            const char *first_validate_key = NULL;
-            while (child) {
-                const char *rom_name = json_getName(child);
-                json_t const *cA = json_getProperty(parsed_json, rom_name);
-                if (cA) {
-                    json_t const *md5_prop = json_getProperty(cA, "md5");
-                    json_t const *name_prop = json_getProperty(cA, "name");
-                    json_t const *validate_prop = json_getProperty(cA, "Validate");
-                    if (md5_prop && name_prop) {
-                        printf("\n%s: %s\nmd5: %s\n", rom_name, json_getValue(name_prop), json_getValue(md5_prop));
-                        if (validate_prop) {
-                            const char *validate_key = json_getValue(validate_prop);
-                            if (validate_key && !first_validate_key) {
-                                // Save the first validation key found
-                                first_validate_key = validate_key;
-                                FILE *fp = fopen("/sdcard/validate.key", "w");
-                                if (!fp) {
-                                    perror("Error: Failed to open /sdcard/validate.key for writing");
+} else {
+    if (json_getType(parsed_json) == JSON_OBJ) {
+        json_t const *child = json_getChild(parsed_json);
+        if (strcmp(json_getName(json_getSibling(child)), "Signup") == 0 || strcmp(json_getName(json_getSibling(child)), "VersionBoot") == 0) {
+            fprintf(stderr, "Error: Invalid data\n");
+            return NULL;
+        }
+        while (child) {
+            const char *rom_name = json_getName(child);
+            json_t const *cA = json_getProperty(parsed_json, rom_name);
+            if (cA) {
+                json_t const *md5_prop = json_getProperty(cA, "md5");
+                json_t const *name_prop = json_getProperty(cA, "name");
+                json_t const *validate_prop = json_getProperty(cA, "Validate");
+                if (md5_prop && name_prop) {
+                    printf("\n%s: %s\nmd5: %s\n", rom_name, json_getValue(name_prop), json_getValue(md5_prop));
+                    if (validate_prop) {
+                        const char *validate_key = json_getValue(validate_prop);
+                        if (validate_key) {
+                            // Generate unique filename
+                            char filename[256];
+                            snprintf(filename, sizeof(filename), "/sdcard/validate_%s.key", rom_name);
+                            FILE *fp = fopen(filename, "w");
+                            if (!fp) {
+                                perror("Error: Failed to open validation key file");
+                            } else {
+                                size_t written = fwrite(validate_key, 1, strlen(validate_key), fp);
+                                if (written != strlen(validate_key)) {
+                                    fprintf(stderr, "Error: Failed to write %s\n", filename);
                                 } else {
-                                    size_t written = fwrite(validate_key, 1, strlen(validate_key), fp);
-                                    if (written != strlen(validate_key)) {
-                                        fprintf(stderr, "Error: Failed to write validate.key\n");
-                                    } else {
-                                        printf("Validation key for %s saved to: /sdcard/validate.key\n", rom_name);
-                                    }
-                                    fclose(fp);
+                                    printf("Validation key for %s saved to: %s\n", rom_name, filename);
                                 }
+                                fclose(fp);
                             }
                         }
                     }
                 }
-                child = json_getSibling(child);
-                if (strcmp(json_getName(child), "Icon") == 0) {
-                    break;
-                }
             }
-            return NULL; // Preserve original return value
+            child = json_getSibling(child);
+            if (strcmp(json_getName(child), "Icon") == 0) {
+                break;
+            }
         }
         return NULL;
     }
+    return NULL;
 }
 
 int start_sideload(const char *sideload_file, const char *validate) {
