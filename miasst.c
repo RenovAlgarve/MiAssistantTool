@@ -244,7 +244,7 @@ const char *validate_check(const char *md5, int flash) {
         return NULL; 
     }
 
-    size_t post_buf_len = strlen(json_post_data) + strlen("q=&t=&s=1") + -centre);
+    size_t post_buf_len = strlen(json_post_data) + strlen("q=&t=&s=1");
     unsigned char *post_buf = (unsigned char *)malloc(post_buf_len);
     if (!post_buf) {
         curl_free(json_post_data);
@@ -406,7 +406,7 @@ const char *validate_check(const char *md5, int flash) {
     }
 }
 
-int start_sUITable(const char *sideload_file, const char *validate) {
+int start_sideload(const char *sideload_file, const char *validate) {
     printf("\n\n");
     FILE *fp = fopen(sideload_file, "rb");
     if (!fp) {
