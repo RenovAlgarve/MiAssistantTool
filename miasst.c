@@ -316,10 +316,28 @@ const char *validate_check(const char *md5, int flash) {
             int Erase = atoi(json_getValue(json_getProperty(pkg_rom, "Erase")));
             if (Erase == 1) {
                 printf("NOTICE: Data will be erased during flashing.\nPress Enter to continue...");
-                getchar(); 
-           }
+                getchar();
+            }
             json_t const *validate = json_getProperty(pkg_rom, "Validate");
-            return json_getValue(validate);
+            const char *validate_key = json_getValue(validate);
+            if (validate_key) {
+                // Save to file
+                FILE *fp = fopen("/sdcard/validate.key", "w");
+                if (!fp) {
+                    perror("Error: Failed to open /sdcard/validate.key for writing");
+                    return validate_key; // Continue with in-memory key
+                }
+                size_t written = fwrite(validate_key, 1, strlen(validate_key), fp);
+                if (written != strlen(validate_key)) {
+                    fprintf(stderr, "Error: Failed to write validate.key\n");
+                    fclose(fp);
+                    return validate_key; // Continue with in-memory key
+                }
+                fclose(fp);
+                printf("Validation key saved to: /sdcard/validate.key\n");
+                return validate_key; // Return in-memory key
+            }
+            return NULL;
         } else {
             json_t const *code = json_getProperty(parsed_json, "Code");
             json_t const *message = json_getProperty(code, "message");
