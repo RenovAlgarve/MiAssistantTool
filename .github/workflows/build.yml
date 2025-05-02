@@ -64,4 +64,4 @@ jobs:
     - name: Upload
       run: |
         VERSION=$(grep -oP '#define VERSION "\K[^"]+' miasst.c)
-        gh release upload $VERSION ./miasst_windows32.exe ./miasst_windows64.exe ./miasst_ubuntu ./miasst_termux_aarch64 ./miasst_termux_arm --clobber
+        gh release upload $VERSION ./miasst_ubuntu ./miasst_termux_aarch64 ./miasst_termux_arm --clobber
