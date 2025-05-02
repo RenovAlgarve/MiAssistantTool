@@ -392,6 +392,213 @@ const char *validate_check(const char *md5, int flash) {
     return NULL;
 }
 
+int generate_validate_key() {
+    // Prompt for firmware file and compute MD5
+    char filePath[256], md5[65];
+    calculate_md5(filePath, md5);
+
+    // Reuse validation logic from validate_check
+    const unsigned char key[16] = { 0x6D, 0x69, 0x75, 0x69, 0x6F, 0x74, 0x61, 0x76, 0x61, 0x6C, 0x69, 0x64, 0x65, 0x64, 0x31, 0x31 };
+    const unsigned char iv[16] = { 0x30, 0x31, 0x30, 0x32, 0x30, 0x33, 0x30, 0x34, 0x30, 0x35, 0x30, 0x36, 0x30, 0x37, 0x30, 0x38 };
+
+    // Check device info
+    if (!device[0] || !version[0] || !codebase[0] || !branch[0] || !sn[0] || !romzone[0]) {
+        fprintf(stderr, "Error: Device information not initialized\n");
+        return 1;
+    }
+
+    // Construct JSON payload
+    char json_request[1024];
+    snprintf(json_request, sizeof(json_request), "{\"d\":\"%s\",\"v\":\"%s\",\"c\":\"%s\",\"b\":\"%s\",\"sn\":\"%s\",\"l\":\"en-US\",\"f\":\"1\",\"options\":{\"zone\":%s},\"pkg\":\"%s\"}", 
+             device, version, codebase, branch, sn, romzone, md5);
+
+    // Pad for AES
+    int len = strlen(json_request);
+    int mod_len = 16 - (len % 16);
+    if (mod_len > 0) {
+        memset(json_request + len, mod_len, mod_len);
+        len += mod_len;
+    }
+
+    // Encrypt
+    unsigned char enc_out[1024];
+    int enc_out_len = 0;
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) {
+        fprintf(stderr, "Error: Failed to initialize EVP context\n");
+        return 1;
+    }
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv) != 1 ||
+        EVP_EncryptUpdate(ctx, enc_out, &enc_out_len, (unsigned char*)json_request, len) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        fprintf(stderr, "Error: Encryption failed\n");
+        return 1;
+    }
+    int final_len = 0;
+    if (EVP_EncryptFinal_ex(ctx, enc_out + enc_out_len, &final_len) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        fprintf(stderr, "Error: Encryption finalization failed\n");
+        return 1;
+    }
+    enc_out_len += final_len;
+    EVP_CIPHER_CTX_free(ctx);
+
+    // Base64 encode
+    char encoded_buf[EVP_ENCODE_LENGTH(enc_out_len)];
+    EVP_EncodeBlock((unsigned char*)encoded_buf, enc_out, enc_out_len);
+
+    // Initialize curl
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        fprintf(stderr, "Error: Failed to initialize curl\n");
+        return 1;
+    }
+
+    // Prepare POST data
+    char *json_post_data = curl_easy_escape(curl, encoded_buf, strlen(encoded_buf));
+    if (!json_post_data) {
+        curl_easy_cleanup(curl);
+        fprintf(stderr, "Error: Failed to escape POST data\n");
+        return 1;
+    }
+    size_t post_buf_len = strlen(json_post_data) + strlen("q=&t=&s=1") + 1;
+    unsigned char *post_buf = (unsigned char *)malloc(post_buf_len);
+    if (!post_buf) {
+        curl_free(json_post_data);
+        curl_easy_cleanup(curl);
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        return 1;
+    }
+    snprintf((char*)post_buf, post_buf_len, "q=%s&t=&s=1", json_post_data);
+    curl_free(json_post_data);
+
+    // Write response to temporary file
+    FILE *response_file = fopen("/sdcard/response.tmp", "wb");
+    if (!response_file) {
+        perror("Error: Failed to open response.tmp");
+        free(post_buf);
+        curl_easy_cleanup(curl);
+        return 1;
+    }
+    curl_easy_setopt(curl, CURLOPT_URL, "http://update.miui.com/updates/miotaV3.php");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "MiTunes_UserAgent_v3.0");
+    curl_easy_setopt(curl, CURLOPT_POST, 1);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_buf);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fwrite);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, response_file);
+
+    CURLcode res = curl_easy_perform(curl);
+    fclose(response_file);
+    free(post_buf);
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Error: Curl failed: %s\n", curl_easy_strerror(res));
+        curl_easy_cleanup(curl);
+        remove("/sdcard/response.tmp");
+        return 1;
+    }
+
+    long status_code;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status_code);
+    curl_easy_cleanup(curl);
+    if (status_code != 200) {
+        fprintf(stderr, "Error: HTTP request failed with status %ld\n", status_code);
+        remove("/sdcard/response.tmp");
+        return 1;
+    }
+
+    // Read response
+    response_file = fopen("/sdcard/response.tmp", "rb");
+    if (!response_file) {
+        perror("Error: Failed to open response.tmp for reading");
+        remove("/sdcard/response.tmp");
+        return 1;
+    }
+    fseek(response_file, 0, SEEK_END);
+    long response_size = ftell(response_file);
+    fseek(response_file, 0, SEEK_SET);
+    char *response_buffer = malloc(response_size + 1);
+    if (!response_buffer) {
+        perror("Error: Memory allocation failed");
+        fclose(response_file);
+        remove("/sdcard/response.tmp");
+        return 1;
+    }
+    fread(response_buffer, 1, response_size, response_buffer);
+    response_buffer[response_size] = '\0';
+    fclose(response_file);
+    remove("/sdcard/response.tmp");
+
+    // Decode and decrypt
+    int decoded_len = EVP_DecodeBlock(post_buf, (unsigned char*)response_buffer, response_size);
+    free(response_buffer);
+    ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) {
+        fprintf(stderr, "Error: Failed to initialize EVP context\n");
+        free(post_buf);
+        return 1;
+    }
+    int plain_len = 0, temp_len = 0;
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv) != 1 ||
+        EVP_DecryptUpdate(ctx, post_buf, &plain_len, post_buf, decoded_len) != 1 ||
+        EVP_DecryptFinal_ex(ctx, post_buf + plain_len, &temp_len) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        free(post_buf);
+        fprintf(stderr, "Error: Decryption failed\n");
+        return 1;
+    }
+    EVP_CIPHER_CTX_free(ctx);
+    plain_len += temp_len;
+
+    // Parse JSON
+    char *start = strchr((char*)post_buf, '{');
+    char *end = strrchr((char*)post_buf, '}');
+    if (!start || !end) {
+        fprintf(stderr, "Error: Invalid JSON response\n");
+        free(post_buf);
+        return 1;
+    }
+    memmove(post_buf, start, end - start + 1);
+    post_buf[end - start + 1] = '\0';
+    json_t pool[10000];
+    json_t const *parsed_json = json_create((char *)post_buf, pool, 10000);
+    free(post_buf);
+    if (!parsed_json) {
+        fprintf(stderr, "Error: Failed to parse JSON\n");
+        return 1;
+    }
+
+    // Extract Validate key
+    json_t const *pkg_rom = json_getProperty(parsed_json, "PkgRom");
+    if (!pkg_rom) {
+        json_t const *code = json_getProperty(parsed_json, "Code");
+        json_t const *message = json_getProperty(code, "message");
+        fprintf(stderr, "Error: %s\n", json_getValue(message));
+        return 1;
+    }
+    json_t const *validate = json_getProperty(pkg_rom, "Validate");
+    const char *validate_key = json_getValue(validate);
+    if (!validate_key) {
+        fprintf(stderr, "Error: Failed to get Validate key\n");
+        return 1;
+    }
+
+    // Save to file
+    FILE *fp = fopen("/sdcard/validate.key", "w");
+    if (!fp) {
+        perror("Error: Failed to open /sdcard/validate.key for writing");
+        return 1;
+    }
+    size_t written = fwrite(validate_key, 1, strlen(validate_key), fp);
+    if (written != strlen(validate_key)) {
+        fprintf(stderr, "Error: Failed to write validate.key\n");
+        fclose(fp);
+        return 1;
+    }
+    fclose(fp);
+    printf("Validation key saved to: /sdcard/validate.key\n");
+    return 0;
+}
+
 int start_sideload(const char *sideload_file, const char *validate) {
 
     printf("\n\n");
@@ -521,15 +728,15 @@ int main(int argc, char *argv[]) {
     if (argc == 1) {
         printf("\nVERSION: %s\n", VERSION);
         printf("Repository: %s\n\n", REPOSITORY);
-        const char *choices[] = {"Read Info", "ROMs that can be flashed", "Flash Official Recovery ROM", "Format Data", "Reboot"};
+        const char *choices[] = {"Read Info", "ROMs that can be flashed", "Flash Official Recovery ROM", "Format Data", "Reboot", "Generate validate.key"};
         printf("\nUsage: %s \033[0;32m<choice>\033[0m\n\n  \033[0;32mchoice\033[0m > description\n\n", argv[0]);
-        for (int i = 0; i < 5; i++)
+        for (int i = 0; i <6; i++)
             printf("  \033[0;32m%d\033[0m > %s\n\n", i + 1, choices[i]);
         return 0;
     }
 
     int choice = atoi(argv[1]);
-    if (choice < 1 || choice > 5) {
+    if (choice < 1 || choice >6) {
         printf("Invalid choice\n");
         return 1;
     }
@@ -623,6 +830,8 @@ int main(int argc, char *argv[]) {
             printf("\n%s\n", reboot);
             break;
         }
+        case 6:
+            return generate_validate_key(); // New case for generating validate.key
         default:
             printf("Invalid option selected.\n");
             break;
