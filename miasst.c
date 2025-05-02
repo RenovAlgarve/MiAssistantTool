@@ -392,6 +392,129 @@ const char *validate_check(const char *md5, int flash) {
     return NULL;
 }
 
+int start_sideload(const char *sideload_file, const char *validate) {
+
+    printf("\n\n");
+    FILE *fp = fopen(sideload_file, "r");
+    if (!fp) {
+        perror("Failed to open file");
+        return 1;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    long file_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);  
+    char sideload_host_command[128 + strlen(validate)];
+    memset(sideload_host_command, 0, sizeof(sideload_host_command));
+    sprintf(sideload_host_command, "sideload-host:%ld:%d:%s:0", file_size, ADB_SIDELOAD_CHUNK_SIZE, validate);
+
+    send_command(ADB_OPEN, 1, 0, sideload_host_command, strlen(sideload_host_command) + 1);
+
+    uint8_t *work_buffer = malloc(ADB_SIDELOAD_CHUNK_SIZE);
+    if (!work_buffer) {
+        perror("Failed to allocate memory");
+        fclose(fp);
+        return 1;
+    }
+
+    char dummy_data[64];
+    int dummy_data_size;
+    adb_usb_packet pkt;
+    long total_sent = 0;
+
+    while (1) {
+        pkt.cmd = 0;
+        recv_packet(&pkt, dummy_data, &dummy_data_size);
+
+        dummy_data[dummy_data_size] = 0;
+        if(dummy_data_size > 8) {
+            printf("\n\n%s\n\n", dummy_data);
+            break;
+        }
+
+        if (pkt.cmd == ADB_OKAY) {
+            send_command(ADB_OKAY, pkt.arg1, pkt.arg0, NULL, 0);
+        }
+
+        if (pkt.cmd == ADB_TRANSFER_DONE && total_sent > 0) {
+            //struct timespec ts = {6, 0};
+            //nanosleep(&ts, NULL);
+            //continue;
+        }
+
+        if (pkt.cmd != ADB_WRTE) {
+            continue;
+        }
+
+        long block = strtol(dummy_data, NULL, 10);
+        long offset = block * ADB_SIDELOAD_CHUNK_SIZE;
+        if (offset > file_size) break;
+        int to_write = ADB_SIDELOAD_CHUNK_SIZE;
+        if(offset + ADB_SIDELOAD_CHUNK_SIZE > file_size) 
+            to_write = file_size - offset;        
+        fseek(fp, offset, SEEK_SET);
+        fread(work_buffer, 1, to_write, fp);
+        send_command(ADB_WRTE, pkt.arg1, pkt.arg0, work_buffer, to_write);
+        send_command(ADB_OKAY, pkt.arg1, pkt.arg0, NULL, 0);
+        total_sent += to_write;
+
+        printf("\rFlashing in progress ... %d/100%%", (int)(((float)total_sent / (1024 * 1024 * 1024) / 2) * 100 / (file_size / (1024 * 1024 * 1024))) > 100 ? 100 : (int)(((float)total_sent / (1024 * 1024 * 1024) / 2) * 100 / (file_size / (1024 * 1024 * 1024))));
+        fflush(stdout);
+
+    }
+
+    free(work_buffer);
+    fclose(fp);
+    return 0;
+}
+
+int check_device(libusb_device *dev) {
+
+    struct libusb_device_descriptor desc;
+    int r = libusb_get_device_descriptor(dev, &desc);
+    struct libusb_config_descriptor *configs;
+    r = libusb_get_active_config_descriptor(dev, &configs);
+
+    bulk_in = -1;
+    bulk_out = -1;
+    interface_num = -1;
+    for (int i = 0; i < configs->bNumInterfaces; i++) {
+        struct libusb_interface intf = configs->interface[i];
+        if (intf.num_altsetting == 0) {
+            continue;
+        }
+        interface_num = i;
+        struct libusb_interface_descriptor intf_desc = intf.altsetting[0];
+
+        if (!(intf_desc.bInterfaceClass == ADB_CLASS && intf_desc.bInterfaceSubClass == ADB_SUB_CLASS && intf_desc.bInterfaceProtocol == ADB_PROTOCOL_CODE)) {
+            continue;
+        }
+        if (intf.num_altsetting != 1) {
+            continue;
+        }
+
+        for(int endpoint_num = 0; endpoint_num < intf_desc.bNumEndpoints; endpoint_num++) {
+            struct libusb_endpoint_descriptor ep = intf_desc.endpoint[endpoint_num];
+            const uint8_t endpoint_addr = ep.bEndpointAddress;
+            const uint8_t endpoint_attr = ep.bmAttributes;
+            const uint8_t transfer_type = endpoint_attr & LIBUSB_TRANSFER_TYPE_MASK;
+            if (transfer_type != LIBUSB_TRANSFER_TYPE_BULK) {
+                continue;
+            }
+            if ((endpoint_addr & LIBUSB_ENDPOINT_DIR_MASK) == LIBUSB_ENDPOINT_OUT && bulk_out == -1) {
+                bulk_out = endpoint_addr;
+            } else if ((endpoint_addr & LIBUSB_ENDPOINT_DIR_MASK) != LIBUSB_ENDPOINT_OUT && bulk_in == -1) {
+                bulk_in = endpoint_addr;
+            }
+
+            if(bulk_out != -1 && bulk_in != -1) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 int generate_validate_key() {
     // Prompt for firmware file and compute MD5
     char filePath[256], md5[65];
@@ -597,130 +720,6 @@ int generate_validate_key() {
     fclose(fp);
     printf("Validation key saved to: /sdcard/validate.key\n");
     return 0;
-}
-
-int start_sideload(const char *sideload_file, const char *validate) {
-
-    printf("\n\n");
-    FILE *fp = fopen(sideload_file, "r");
-    if (!fp) {
-        perror("Failed to open file");
-        return 1;
-    }
-
-    fseek(fp, 0, SEEK_END);
-    long file_size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);  
-    char sideload_host_command[128 + strlen(validate)];
-    memset(sideload_host_command, 0, sizeof(sideload_host_command));
-    sprintf(sideload_host_command, "sideload-host:%ld:%d:%s:0", file_size, ADB_SIDELOAD_CHUNK_SIZE, validate);
-
-    send_command(ADB_OPEN, 1, 0, sideload_host_command, strlen(sideload_host_command) + 1);
-
-    uint8_t *work_buffer = malloc(ADB_SIDELOAD_CHUNK_SIZE);
-    if (!work_buffer) {
-        perror("Failed to allocate memory");
-        fclose(fp);
-        return 1;
-    }
-
-    char dummy_data[64];
-    int dummy_data_size;
-    adb_usb_packet pkt;
-    long total_sent = 0;
-
-    while (1) {
-        pkt.cmd = 0;
-        recv_packet(&pkt, dummy_data, &dummy_data_size);
-
-        dummy_data[dummy_data_size] = 0;
-        if(dummy_data_size > 8) {
-            printf("\n\n%s\n\n", dummy_data);
-            break;
-        }
-
-        if (pkt.cmd == ADB_OKAY) {
-            send_command(ADB_OKAY, pkt.arg1, pkt.arg0, NULL, 0);
-        }
-
-        if (pkt.cmd == ADB_TRANSFER_DONE && total_sent > 0) {
-            //struct timespec ts = {6, 0};
-            //nanosleep(&ts, NULL);
-            //continue;
-        }
-
-        if (pkt.cmd != ADB_WRTE) {
-            continue;
-        }
-
-        long block = strtol(dummy_data, NULL, 10);
-        long offset = block * ADB_SIDELOAD_CHUNK_SIZE;
-        if (offset > file_size) break;
-        int to_write = ADB_SIDELOAD_CHUNK_SIZE;
-        if(offset + ADB_SIDELOAD_CHUNK_SIZE > file_size) 
-            to_write = file_size - offset;        
-        fseek(fp, offset, SEEK_SET);
-        fread(work_buffer, 1, to_write, fp);
-        send_command(ADB_WRTE, pkt.arg1, pkt.arg0, work_buffer, to_write);
-        send_command(ADB_OKAY, pkt.arg1, pkt.arg0, NULL, 0);
-        total_sent += to_write;
-
-        printf("\rFlashing in progress ... %d/100%%", (int)(((float)total_sent / (1024 * 1024 * 1024) / 2) * 100 / (file_size / (1024 * 1024 * 1024))) > 100 ? 100 : (int)(((float)total_sent / (1024 * 1024 * 1024) / 2) * 100 / (file_size / (1024 * 1024 * 1024))));
-        fflush(stdout);
-
-    }
-
-    free(work_buffer);
-    fclose(fp);
-    return 0;
-}
-
-
-int check_device(libusb_device *dev) {
-
-    struct libusb_device_descriptor desc;
-    int r = libusb_get_device_descriptor(dev, &desc);
-    struct libusb_config_descriptor *configs;
-    r = libusb_get_active_config_descriptor(dev, &configs);
-
-    bulk_in = -1;
-    bulk_out = -1;
-    interface_num = -1;
-    for (int i = 0; i < configs->bNumInterfaces; i++) {
-        struct libusb_interface intf = configs->interface[i];
-        if (intf.num_altsetting == 0) {
-            continue;
-        }
-        interface_num = i;
-        struct libusb_interface_descriptor intf_desc = intf.altsetting[0];
-
-        if (!(intf_desc.bInterfaceClass == ADB_CLASS && intf_desc.bInterfaceSubClass == ADB_SUB_CLASS && intf_desc.bInterfaceProtocol == ADB_PROTOCOL_CODE)) {
-            continue;
-        }
-        if (intf.num_altsetting != 1) {
-            continue;
-        }
-
-        for(int endpoint_num = 0; endpoint_num < intf_desc.bNumEndpoints; endpoint_num++) {
-            struct libusb_endpoint_descriptor ep = intf_desc.endpoint[endpoint_num];
-            const uint8_t endpoint_addr = ep.bEndpointAddress;
-            const uint8_t endpoint_attr = ep.bmAttributes;
-            const uint8_t transfer_type = endpoint_attr & LIBUSB_TRANSFER_TYPE_MASK;
-            if (transfer_type != LIBUSB_TRANSFER_TYPE_BULK) {
-                continue;
-            }
-            if ((endpoint_addr & LIBUSB_ENDPOINT_DIR_MASK) == LIBUSB_ENDPOINT_OUT && bulk_out == -1) {
-                bulk_out = endpoint_addr;
-            } else if ((endpoint_addr & LIBUSB_ENDPOINT_DIR_MASK) != LIBUSB_ENDPOINT_OUT && bulk_in == -1) {
-                bulk_in = endpoint_addr;
-            }
-
-            if(bulk_out != -1 && bulk_in != -1) {
-                return 0;
-            }
-        }
-    }
-    return 1;
 }
 
 int main(int argc, char *argv[]) {
