@@ -45,25 +45,7 @@ jobs:
         curl -L -o libusb.7z https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27.7z && 7z x libusb.7z -o./libusb && rm libusb.7z
         curl -L -o curl32.zip https://curl.se/windows/dl-8.11.0_1/curl-8.11.0_1-win32-mingw.zip && 7z x curl32.zip -o./curl && rm curl32.zip && mv curl/curl-8.11.0_1-win32-mingw curl/win32
         curl -L -o curl64.zip https://curl.se/windows/dl-8.11.0_1/curl-8.11.0_1-win64-mingw.zip && 7z x curl64.zip -o./curl && rm curl64.zip && mv curl/curl-8.11.0_1-win64-mingw curl/win64
-
-    - name: Build for Windows
-      run: |
-        for arch in i686 x86_64; do
-          suffix=""
-          if [ "$arch" == "i686" ]; then
-            suffix="32"
-            op="x86"
-          elif [ "$arch" == "x86_64" ]; then
-            suffix="64"
-            op="x64"
-          fi
-
-          $arch-w64-mingw32-gcc -o miasst_windows${suffix}.exe miasst.c tiny-json/tiny-json.c \
-            -I./libusb/include -I./openssl/${op}/include -I./curl/win${suffix}/include -I./tiny-json \
-            -L./libusb/MinGW${suffix}/static -L./openssl/${op}/lib -L./curl/win${suffix}/lib \
-            -lusb-1.0 -lssl -lcrypto -lcurl
-        done
-
+        
     - name: Build miasst for Termux
       run: |
         for arch in arm aarch64; do
@@ -83,20 +65,3 @@ jobs:
       run: |
         VERSION=$(grep -oP '#define VERSION "\K[^"]+' miasst.c)
         gh release upload $VERSION ./miasst_windows32.exe ./miasst_windows64.exe ./miasst_ubuntu ./miasst_termux_aarch64 ./miasst_termux_arm --clobber
-
-  build-macos:
-    runs-on: macos-latest
-    steps:
-    - uses: actions/checkout@v4
-    - run: |
-        brew install libusb openssl curl
-        git clone https://github.com/rafagafe/tiny-json.git
-
-    - name: Build miasst for macOS
-      run: |
-        clang -o miasst_macos miasst.c tiny-json/tiny-json.c -I/System/Volumes/Data/opt/homebrew/Cellar/libusb/1.0.27/include -I/System/Volumes/Data/opt/homebrew/opt/openssl/include -L/System/Volumes/Data/opt/homebrew/Cellar/libusb/1.0.27/lib -L/System/Volumes/Data/opt/homebrew/opt/openssl/lib -I. -lssl -lcrypto -lcurl -lusb-1.0
-
-    - name: Upload macOS Build
-      run: |
-        VERSION=$(awk -F'"' '/#define VERSION/ {print $2}' miasst.c)
-        gh release upload $VERSION ./miasst_macos --clobber
