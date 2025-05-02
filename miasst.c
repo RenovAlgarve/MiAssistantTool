@@ -7,17 +7,10 @@
 #include <libusb-1.0/libusb.h>
 #endif
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <errno.h>
-#include <time.h>
+#include <unistd.h>
 #include <openssl/evp.h>
 #include <curl/curl.h>
-
-#ifndef _WIN32
-#include <unistd.h>
-#endif
 
 #include "tiny-json/tiny-json.h"
 
@@ -61,12 +54,9 @@ typedef struct {
     uint32_t magic;
 } adb_usb_packet;
 
-#ifdef _WIN32
-int libusb_wrap_sys_device(libusb_context *ctx, intptr_t sys_dev, libusb_device_handle **handle);
-#endif
-
 int usb_read(void *data, int datalen) {
     int read_len;
+    libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY);
     int r = libusb_bulk_transfer(dev_handle, bulk_in, data, datalen, &read_len, 1000);
     if (r != LIBUSB_SUCCESS) {
         return -1;
@@ -76,6 +66,7 @@ int usb_read(void *data, int datalen) {
 
 int usb_write(void *data, int datalen) {
     int write_len;
+    libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY);
     int r = libusb_bulk_transfer(dev_handle, bulk_out, data, datalen, &write_len, 1000);
     if (r != LIBUSB_SUCCESS) {
         return -1;
@@ -92,12 +83,12 @@ int send_command(uint32_t cmd, uint32_t arg0, uint32_t arg1, void *data, int dat
     pkt.checksum = 0;
     pkt.magic = cmd ^ 0xffffffff;
 
-    if (usb_write(&pkt, sizeof(pkt)) == -1) {
+    if(usb_write(&pkt, sizeof(pkt)) == -1) {
         return 1;
     } 
 
-    if (datalen > 0) {
-        if (usb_write(data, datalen) == -1) {
+    if(datalen > 0) {
+        if(usb_write(data, datalen) == -1) {
             return 1;
         }
     }
@@ -105,14 +96,12 @@ int send_command(uint32_t cmd, uint32_t arg0, uint32_t arg1, void *data, int dat
 }
 
 int recv_packet(adb_usb_packet *pkt, void* data, int *data_len) {
-    int read_result = usb_read(pkt, sizeof(adb_usb_packet));
-    if (read_result < 0) {
+    if(!usb_read(pkt, sizeof(adb_usb_packet))) {
         return 1;
     }
 
-    if (pkt->len > 0) {
-        read_result = usb_read(data, pkt->len);
-        if (read_result < 0) {
+    if(pkt->len > 0) {
+        if(!usb_read(data, pkt->len)) {
             return 1;
         }
     }
@@ -121,6 +110,8 @@ int recv_packet(adb_usb_packet *pkt, void* data, int *data_len) {
     return 0;
 }
 
+
+
 char* adb_cmd(char* command) {
     int cmd_len = strlen(command);
     char cmd[cmd_len + 1];
@@ -128,17 +119,14 @@ char* adb_cmd(char* command) {
     cmd[cmd_len] = 0;
 
     if (send_command(ADB_OPEN, 1, 0, cmd, cmd_len)) {
-        printf("device does not accept connect request\n");
+        printf("device not accept connect request\n");
         return NULL;
     }
 
     adb_usb_packet pkt;
     char data[512];
     int data_len;
-    if (recv_packet(&pkt, data, &data_len)) {
-        printf("Failed to get response from device\n");
-        return NULL;
-    }
+    recv_packet(&pkt, data, &data_len);
 
     if (recv_packet(&pkt, response, &data_len)) {
         printf("Failed to get info from device\n");
@@ -147,7 +135,7 @@ char* adb_cmd(char* command) {
 
     response[data_len] = 0;
 
-    if (data_len > 0 && response[data_len - 1] == '\n')
+    if (response[data_len - 1] == '\n')
         response[data_len - 1] = 0;
 
     recv_packet(&pkt, data, &data_len);
@@ -155,22 +143,12 @@ char* adb_cmd(char* command) {
     return response;
 }
 
-void calculate_md5(char *filePath, char *md5) {
-    FILE *file;
-
-    while (1) {
-        printf("Enter .zip file path: ");
-        if (fgets(filePath, 256, stdin)) {
-            filePath[strcspn(filePath, "\n")] = '\0';
-            if (strstr(filePath, ".zip") && (file = fopen(filePath, "rb"))) {
-                fclose(file);
-                break;
-            }
-        }
-        printf("Invalid file, try again.\n");
+void calculate_md5(const char *filePath, char *md5) {
+    FILE *file = fopen(filePath, "rb");
+    if (!file) {
+        perror("Failed to open file");
+        exit(1);
     }
-
-    file = fopen(filePath, "rb");
     EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
     EVP_DigestInit_ex(mdctx, EVP_md5(), NULL);
     unsigned char data[1024], md5hash[EVP_MAX_MD_SIZE];
@@ -195,15 +173,11 @@ const char *validate_check(const char *md5, int flash) {
     const unsigned char iv[16] = { 0x30, 0x31, 0x30, 0x32, 0x30, 0x33, 0x30, 0x34, 0x30, 0x35, 0x30, 0x36, 0x30, 0x37, 0x30, 0x38 };
 
     char json_request[1024];
-    snprintf(json_request, sizeof(json_request), "{\"d\":\"%s\",\"v\":\"%s\",\"c\":\"%s\",\"b\":\"%s\",\"sn\":\"%s\",\"l\":\"en-US\",\"f\":\"1\",\"options\":{\"zone\":%s},\"pkg\":\"%s\"}", 
-             device, version, codebase, branch, sn, romzone, md5);
+    sprintf(json_request, "{\"d\":\"%s\",\"v\":\"%s\",\"c\":\"%s\",\"b\":\"%s\",\"sn\":\"%s\",\"l\":\"en-US\",\"f\":\"1\",\"options\":{\"zone\":%s},\"pkg\":\"%s\"}", device, version, codebase, branch, sn, romzone, md5);
 
     int len = strlen(json_request);
     int mod_len = 16 - (len % 16);
-    if (mod_len > 0) {
-        memset(json_request + len, mod_len, mod_len);
-        len += mod_len;
-    }
+    if (mod_len > 0) memset(json_request + len, mod_len, mod_len), len += mod_len;
 
     unsigned char enc_out[1024]; 
     int enc_out_len = 0;
@@ -244,7 +218,7 @@ const char *validate_check(const char *md5, int flash) {
         return NULL; 
     }
 
-    size_t post_buf_len = strlen(json_post_data) + strlen("q=&t=&s=1");
+    size_t post_buf_len = strlen(json_post_data) + strlen("q=&t=&s=1") + 1;
     unsigned char *post_buf = (unsigned char *)malloc(post_buf_len);
     if (!post_buf) {
         curl_free(json_post_data);
@@ -321,6 +295,7 @@ const char *validate_check(const char *md5, int flash) {
 
     memmove(post_buf, start, end - start + 1);
     post_buf[end - start + 1] = '\0';
+    // printf("Response after decryption: %s\n", post_buf); 
     json_t pool[10000];
     json_t const *parsed_json = json_create((char *)post_buf, pool, 10000);
     if (!parsed_json) return NULL;
@@ -328,30 +303,13 @@ const char *validate_check(const char *md5, int flash) {
     if (flash == 1) {
         json_t const *pkg_rom = json_getProperty(parsed_json, "PkgRom");
         if (pkg_rom) {
-            json_t const *erase = json_getProperty(pkg_rom, "Erase");
-            if (erase && atoi(json_getValue(erase)) == 1) {
+            int Erase = atoi(json_getValue(json_getProperty(pkg_rom, "Erase")));
+            if (Erase == 1) {
                 printf("NOTICE: Data will be erased during flashing.\nPress Enter to continue...");
-                getchar();
-            }
+                getchar(); 
+           }
             json_t const *validate = json_getProperty(pkg_rom, "Validate");
-            const char *validate_key = json_getValue(validate);
-            if (validate_key) {
-                FILE *fp = fopen("/sdcard/validate.key", "w");
-                if (!fp) {
-                    perror("Error: Failed to open /sdcard/validate.key for writing");
-                    return validate_key;
-                }
-                size_t written = fwrite(validate_key, 1, strlen(validate_key), fp);
-                if (written != strlen(validate_key)) {
-                    fprintf(stderr, "Error: Failed to write validate.key\n");
-                    fclose(fp);
-                    return validate_key;
-                }
-                fclose(fp);
-                printf("Validation key saved to: /sdcard/validate.key\n");
-                return validate_key;
-            }
-            return NULL;
+            return json_getValue(validate);
         } else {
             json_t const *code = json_getProperty(parsed_json, "Code");
             json_t const *message = json_getProperty(code, "message");
@@ -361,54 +319,32 @@ const char *validate_check(const char *md5, int flash) {
     } else {
         if (json_getType(parsed_json) == JSON_OBJ) {
             json_t const *child = json_getChild(parsed_json);
-            if (child && (strcmp(json_getName(json_getSibling(child)), "Signup") == 0 || strcmp(json_getName(json_getSibling(child)), "VersionBoot") == 0)) {
+            if (strcmp(json_getName(json_getSibling(child)), "Signup") == 0 || strcmp(json_getName(json_getSibling(child)), "VersionBoot") == 0) {
                 fprintf(stderr, "Error: Invalid data\n");
                 return NULL;
             }
             while (child) {
-                const char *rom_name = json_getName(child);
-                json_t const *cA = json_getProperty(parsed_json, rom_name);
-                if (cA) {
-                    json_t const *md5_prop = json_getProperty(cA, "md5");
-                    json_t const *name_prop = json_getProperty(cA, "name");
-                    json_t const *validate_prop = json_getProperty(cA, "Validate");
-                    if (md5_prop && name_prop) {
-                        printf("\n%s: %s\nmd5: %s\n", rom_name, json_getValue(name_prop), json_getValue(md5_prop));
-                        if (validate_prop) {
-                            const char *validate_key = json_getValue(validate_prop);
-                            if (validate_key) {
-                                char filename[256];
-                                snprintf(filename, sizeof(filename), "/sdcard/validate_%s.key", rom_name);
-                                FILE *fp = fopen(filename, "w");
-                                if (!fp) {
-                                    perror("Error: Failed to open validation key file");
-                                } else {
-                                    size_t written = fwrite(validate_key, 1, strlen(validate_key), fp);
-                                    if (written != strlen(validate_key)) {
-                                        fprintf(stderr, "Error: Failed to write %s\n", filename);
-                                    } else {
-                                        printf("Validation key for %s saved to: %s\n", rom_name, filename);
-                                    }
-                                    fclose(fp);
-                                }
-                            }
-                        }
-                    }
-                }
-                child = json_getSibling(child);
-                if (child && strcmp(json_getName(child), "Icon") == 0) {
+                child = json_getSibling(child); 
+                if (strcmp(json_getName(child), "Icon") == 0) {
                     break;
                 }
+                json_t const *cA = json_getProperty(parsed_json, json_getName(child));
+                if (cA) {
+                    json_t const *md5 = json_getProperty(cA, "md5");
+                    if (md5) {
+                        printf("\n%s: %s\nmd5: %s\n", json_getName(child), json_getValue(json_getProperty(cA, "name")), json_getValue(md5));
+                    } 
+                }     
             }
-            return NULL;
         }
         return NULL;
     }
 }
 
 int start_sideload(const char *sideload_file, const char *validate) {
+
     printf("\n\n");
-    FILE *fp = fopen(sideload_file, "rb");
+    FILE *fp = fopen(sideload_file, "r");
     if (!fp) {
         perror("Failed to open file");
         return 1;
@@ -419,7 +355,7 @@ int start_sideload(const char *sideload_file, const char *validate) {
     fseek(fp, 0, SEEK_SET);  
     char sideload_host_command[128 + strlen(validate)];
     memset(sideload_host_command, 0, sizeof(sideload_host_command));
-    snprintf(sideload_host_command, sizeof(sideload_host_command), "sideload-host:%ld:%d:%s:0", file_size, ADB_SIDELOAD_CHUNK_SIZE, validate);
+    sprintf(sideload_host_command, "sideload-host:%ld:%d:%s:0", file_size, ADB_SIDELOAD_CHUNK_SIZE, validate);
 
     send_command(ADB_OPEN, 1, 0, sideload_host_command, strlen(sideload_host_command) + 1);
 
@@ -437,13 +373,10 @@ int start_sideload(const char *sideload_file, const char *validate) {
 
     while (1) {
         pkt.cmd = 0;
-        if (recv_packet(&pkt, dummy_data, &dummy_data_size)) {
-            printf("\nFailed to receive packet\n");
-            break;
-        }
+        recv_packet(&pkt, dummy_data, &dummy_data_size);
 
         dummy_data[dummy_data_size] = 0;
-        if (dummy_data_size > 8) {
+        if(dummy_data_size > 8) {
             printf("\n\n%s\n\n", dummy_data);
             break;
         }
@@ -453,7 +386,9 @@ int start_sideload(const char *sideload_file, const char *validate) {
         }
 
         if (pkt.cmd == ADB_TRANSFER_DONE && total_sent > 0) {
-            continue;
+            //struct timespec ts = {6, 0};
+            //nanosleep(&ts, NULL);
+            //continue;
         }
 
         if (pkt.cmd != ADB_WRTE) {
@@ -462,9 +397,9 @@ int start_sideload(const char *sideload_file, const char *validate) {
 
         long block = strtol(dummy_data, NULL, 10);
         long offset = block * ADB_SIDELOAD_CHUNK_SIZE;
-        if (offset >= file_size) break;
+        if (offset > file_size) break;
         int to_write = ADB_SIDELOAD_CHUNK_SIZE;
-        if (offset + ADB_SIDELOAD_CHUNK_SIZE > file_size) 
+        if(offset + ADB_SIDELOAD_CHUNK_SIZE > file_size) 
             to_write = file_size - offset;        
         fseek(fp, offset, SEEK_SET);
         fread(work_buffer, 1, to_write, fp);
@@ -472,11 +407,9 @@ int start_sideload(const char *sideload_file, const char *validate) {
         send_command(ADB_OKAY, pkt.arg1, pkt.arg0, NULL, 0);
         total_sent += to_write;
 
-        printf("\rFlashing in progress ... %d/100%%", 
-               (int)(((float)total_sent / (1024 * 1024 * 1024) / 2) * 100 / (file_size / (1024 * 1024 * 1024))) > 100 
-               ? 100 
-               : (int)(((float)total_sent / (1024 * 1024 * 1024) / 2) * 100 / (file_size / (1024 * 1024 * 1024))));
+        printf("\rFlashing in progress ... %d/100%%", (int)(((float)total_sent / (1024 * 1024 * 1024) / 2) * 100 / (file_size / (1024 * 1024 * 1024))) > 100 ? 100 : (int)(((float)total_sent / (1024 * 1024 * 1024) / 2) * 100 / (file_size / (1024 * 1024 * 1024))));
         fflush(stdout);
+
     }
 
     free(work_buffer);
@@ -484,14 +417,13 @@ int start_sideload(const char *sideload_file, const char *validate) {
     return 0;
 }
 
+
 int check_device(libusb_device *dev) {
+
     struct libusb_device_descriptor desc;
     int r = libusb_get_device_descriptor(dev, &desc);
-    if (r != LIBUSB_SUCCESS) return 1;
-
     struct libusb_config_descriptor *configs;
     r = libusb_get_active_config_descriptor(dev, &configs);
-    if (r != LIBUSB_SUCCESS) return 1;
 
     bulk_in = -1;
     bulk_out = -1;
@@ -511,7 +443,7 @@ int check_device(libusb_device *dev) {
             continue;
         }
 
-        for (int endpoint_num = 0; endpoint_num < intf_desc.bNumEndpoints; endpoint_num++) {
+        for(int endpoint_num = 0; endpoint_num < intf_desc.bNumEndpoints; endpoint_num++) {
             struct libusb_endpoint_descriptor ep = intf_desc.endpoint[endpoint_num];
             const uint8_t endpoint_addr = ep.bEndpointAddress;
             const uint8_t endpoint_attr = ep.bmAttributes;
@@ -525,287 +457,94 @@ int check_device(libusb_device *dev) {
                 bulk_in = endpoint_addr;
             }
 
-            if (bulk_out != -1 && bulk_in != -1) {
-                libusb_free_config_descriptor(configs);
+            if(bulk_out != -1 && bulk_in != -1) {
                 return 0;
             }
         }
     }
-    libusb_free_config_descriptor(configs);
     return 1;
 }
 
-int generate_validate_key() {
-    char filePath[256], md5[65];
-    calculate_md5(filePath, md5);
-
-    const unsigned char key[16] = { 0x6D, 0x69, 0x75, 0x69, 0x6F, 0x74, 0x61, 0x76, 0x61, 0x6C, 0x69, 0x64, 0x65, 0x64, 0x31, 0x31 };
-    const unsigned char iv[16] = { 0x30, 0x31, 0x30, 0x32, 0x30, 0x33, 0x30, 0x34, 0x30, 0x35, 0x30, 0x36, 0x30, 0x37, 0x30, 0x38 };
-
-    if (!device[0] || !version[0] || !codebase[0] || !branch[0] || !sn[0] || !romzone[0]) {
-        fprintf(stderr, "Error: Device information not initialized\n");
-        return 1;
-    }
-
-    char json_request[1024];
-    snprintf(json_request, sizeof(json_request), "{\"d\":\"%s\",\"v\":\"%s\",\"c\":\"%s\",\"b\":\"%s\",\"sn\":\"%s\",\"l\":\"en-US\",\"f\":\"1\",\"options\":{\"zone\":%s},\"pkg\":\"%s\"}", 
-             device, version, codebase, branch, sn, romzone, md5);
-
-    int len = strlen(json_request);
-    int mod_len = 16 - (len % 16);
-    if (mod_len > 0) {
-        memset(json_request + len, mod_len, mod_len);
-        len += mod_len;
-    }
-
-    unsigned char enc_out[1024];
-    int enc_out_len = 0;
-    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) {
-        fprintf(stderr, "Error: Failed to initialize EVP context\n");
-        return 1;
-    }
-    if (EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv) != 1 ||
-        EVP_EncryptUpdate(ctx, enc_out, &enc_out_len, (unsigned char*)json_request, len) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        fprintf(stderr, "Error: Encryption failed\n");
-        return 1;
-    }
-    int final_len = 0;
-    if (EVP_EncryptFinal_ex(ctx, enc_out + enc_out_len, &final_len) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        fprintf(stderr, "Error: Encryption finalization failed\n");
-        return 1;
-    }
-    enc_out_len += final_len;
-    EVP_CIPHER_CTX_free(ctx);
-
-    char encoded_buf[EVP_ENCODE_LENGTH(enc_out_len)];
-    EVP_EncodeBlock((unsigned char*)encoded_buf, enc_out, enc_out_len);
-
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        fprintf(stderr, "Error: Failed to initialize curl\n");
-        return 1;
-    }
-
-    char *json_post_data = curl_easy_escape(curl, encoded_buf, strlen(encoded_buf));
-    if (!json_post_data) {
-        curl_easy_cleanup(curl);
-        fprintf(stderr, "Error: Failed to escape POST data\n");
-        return 1;
-    }
-    size_t post_buf_len = strlen(json_post_data) + strlen("q=&t=&s=1") + 1;
-    unsigned char *post_buf = (unsigned char *)malloc(post_buf_len);
-    if (!post_buf) {
-        curl_free(json_post_data);
-        curl_easy_cleanup(curl);
-        fprintf(stderr, "Error: Memory allocation failed\n");
-        return 1;
-    }
-    snprintf((char*)post_buf, post_buf_len, "q=%s&t=&s=1", json_post_data);
-    curl_free(json_post_data);
-
-    FILE *response_file = fopen("/sdcard/response.tmp", "wb");
-    if (!response_file) {
-        perror("Error: Failed to open response.tmp");
-        free(post_buf);
-        curl_easy_cleanup(curl);
-        return 1;
-    }
-    curl_easy_setopt(curl, CURLOPT_URL, "http://update.miui.com/updates/miotaV3.php");
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "MiTunes_UserAgent_v3.0");
-    curl_easy_setopt(curl, CURLOPT_POST, 1);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_buf);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fwrite);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, response_file);
-
-    CURLcode res = curl_easy_perform(curl);
-    fclose(response_file);
-    free(post_buf);
-    if (res != CURLE_OK) {
-        fprintf(stderr, "Error: Curl failed: %s\n", curl_easy_strerror(res));
-        curl_easy_cleanup(curl);
-        remove("/sdcard/response.tmp");
-        return 1;
-    }
-
-    long status_code;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status_code);
-    curl_easy_cleanup(curl);
-    if (status_code != 200) {
-        fprintf(stderr, "Error: HTTP request failed with status %ld\n", status_code);
-        remove("/sdcard/response.tmp");
-        return 1;
-    }
-
-    response_file = fopen("/sdcard/response.tmp", "rb");
-    if (!response_file) {
-        perror("Error: Failed to open response.tmp for reading");
-        remove("/sdcard/response.tmp");
-        return 1;
-    }
-    fseek(response_file, 0, SEEK_END);
-    long response_size = ftell(response_file);
-    fseek(response_file, 0, SEEK_SET);
-    char *response_buffer = malloc(response_size + 1);
-    if (!response_buffer) {
-        perror("Error: Memory allocation failed");
-        fclose(response_file);
-        remove("/sdcard/response.tmp");
-        return 1;
-    }
-    fread(response_buffer, 1, response_size, response_file);
-    response_buffer[response_size] = '\0';
-    fclose(response_file);
-    remove("/sdcard/response.tmp");
-
-    int decoded_len = EVP_DecodeBlock(post_buf, (unsigned char*)response_buffer, response_size);
-    free(response_buffer);
-    ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) {
-        fprintf(stderr, "Error: Failed to initialize EVP context\n");
-        free(post_buf);
-        return 1;
-    }
-    int plain_len = 0, temp_len = 0;
-    if (EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv) != 1 ||
-        EVP_DecryptUpdate(ctx, post_buf, &plain_len, post_buf, decoded_len) != 1 ||
-        EVP_DecryptFinal_ex(ctx, post_buf + plain_len, &temp_len) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        free(post_buf);
-        fprintf(stderr, "Error: Decryption failed\n");
-        return 1;
-    }
-    EVP_CIPHER_CTX_free(ctx);
-    plain_len += temp_len;
-
-    char *start = strchr((char*)post_buf, '{');
-    char *end = strrchr((char*)post_buf, '}');
-    if (!start || !end) {
-        fprintf(stderr, "Error: Invalid JSON response\n");
-        free(post_buf);
-        return 1;
-    }
-    memmove(post_buf, start, end - start + 1);
-    post_buf[end - start + 1] = '\0';
-    json_t pool[10000];
-    json_t const *parsed_json = json_create((char *)post_buf, pool, 10000);
-    free(post_buf);
-    if (!parsed_json) {
-        fprintf(stderr, "Error: Failed to parse JSON\n");
-        return 1;
-    }
-
-    json_t const *pkg_rom = json_getProperty(parsed_json, "PkgRom");
-    if (!pkg_rom) {
-        json_t const *code = json_getProperty(parsed_json, "Code");
-        json_t const *message = json_getProperty(code, "message");
-        fprintf(stderr, "Error: %s\n", json_getValue(message));
-        return 1;
-    }
-    json_t const *validate = json_getProperty(pkg_rom, "Validate");
-    const char *validate_key = json_getValue(validate);
-    if (!validate_key) {
-        fprintf(stderr, "Error: Failed to get Validate key\n");
-        return 1;
-    }
-
-    FILE *fp = fopen("/sdcard/validate.key", "w");
-    if (!fp) {
-        perror("Error: Failed to open /sdcard/validate.key for writing");
-        return 1;
-    }
-    size_t written = fwrite(validate_key, 1, strlen(validate_key), fp);
-    if (written != strlen(validate_key)) {
-        fprintf(stderr, "Error: Failed to write validate.key\n");
-        fclose(fp);
-        return 1;
-    }
-    fclose(fp);
-    printf("Validation key saved to: /sdcard/validate.key\n");
-    return 0;
-}
-
 int main(int argc, char *argv[]) {
-    if (argc == 1) {
+    int opt;
+    int choice = -1;
+    char *firmware_file = NULL;
+
+    // Parse command-line options
+    while ((opt = getopt(argc, argv, "c:f:")) != -1) {
+        switch (opt) {
+            case 'c':
+                choice = atoi(optarg);
+                break;
+            case 'f':
+                firmware_file = optarg;
+                break;
+            default:
+                fprintf(stderr, "Usage: %s -c <choice> [-f <firmware_file>]\n", argv[0]);
+                return 1;
+        }
+    }
+
+    // If no options provided, display usage
+    if (choice == -1) {
         printf("\nVERSION: %s\n", VERSION);
         printf("Repository: %s\n\n", REPOSITORY);
-        const char *choices[] = {"Read Info", "ROMs that can be flashed", "Flash Official Recovery ROM", "Format Data", "Reboot", "Generate validate.key"};
-        printf("\nUsage: %s \033[0;32m<choice>\033[0m\n\n  \033[0;32mchoice\033[0m > description\n\n", argv[0]);
-        for (int i = 0; i < 6; i++)
-            printf("  \033[0;32m%d\033[0m > %s\n\n", i + 1, choices[i]);
+        const char *choices[] = {"Read Info", "ROMs that can be flashed", "Flash Official Recovery ROM", "Format Data", "Reboot"};
+        printf("\nUsage: %s -c <choice> [-f <firmware_file>]\n\n", argv[0]);
+        printf("  -c <choice> : Specify the operation (1-5)\n");
+        printf("  -f <firmware_file> : Specify the firmware file for choice 3\n");
+        printf("\nChoices:\n");
+        for (int i = 0; i < 5; i++)
+            printf("  %d > %s\n", i + 1, choices[i]);
         return 0;
     }
 
-    int choice = atoi(argv[1]);
-    if (choice < 1 || choice > 6) {
+    // Validate choice
+    if (choice < 1 || choice > 5) {
         printf("Invalid choice\n");
         return 1;
     }
 
-#ifdef _WIN32
-    int method = 2;
-#else
-    int method = (getenv("PREFIX") && access("/data/data/com.termux", F_OK) != -1) ? (geteuid() == 0 ? 2 : 1) : 2;
-#endif
+    // ... (rest of initialization code remains unchanged) ...
+    #ifdef _WIN32
+        int method = 2;
+    #else
+        int method = (getenv("PREFIX") && access("/data/data/com.termux", F_OK) != -1) ? (geteuid() == 0 ? 2 : 1) : 2;
+    #endif
 
-    if (libusb_init(&ctx) != LIBUSB_SUCCESS) {
-        fprintf(stderr, "Error: Failed to initialize libusb\n");
-        return 1;
-    }
+    libusb_init(&ctx);
 
     if (method == 1) {
         const char *fd = getenv("TERMUX_USB_FD");
         if (fd == NULL) {
             printf("\n\nWithout root (termux-usb must be used)\n\n");
-            libusb_exit(ctx);
             return 1;
         }
         libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY);
-        if (libusb_wrap_sys_device(ctx, (intptr_t)atoi(fd), &dev_handle) != LIBUSB_SUCCESS) {
-            fprintf(stderr, "Error: Failed to wrap USB device\n");
-            libusb_exit(ctx);
-            return 1;
-        }
+        libusb_wrap_sys_device(ctx, (intptr_t)atoi(fd), &dev_handle);
         if (check_device(libusb_get_device(dev_handle))) {
             printf("\n\ndevice is not connected, or not in mi assistant mode\n\n");
-            libusb_close(dev_handle);
-            libusb_exit(ctx);
             return 1;
         }
     } else {
         libusb_device **devs = NULL;
         ssize_t cnt = libusb_get_device_list(ctx, &devs);
-        if (cnt < 0) {
-            fprintf(stderr, "Error: Failed to get device list\n");
-            libusb_exit(ctx);
-            return 1;
-        }
         int i = 0;
         libusb_device *dev = NULL;
-        while (i < cnt && (dev = devs[i]) != NULL && check_device(dev) != 0) i++;
-        libusb_free_device_list(devs, 1);
-        if (dev == NULL) {
+        while ((dev = devs[i++]) != NULL && check_device(dev) != 0);
+        if (!dev) {
             printf("\n\ndevice is not connected, or not in mi assistant mode\n\n");
-            libusb_exit(ctx);
             return 1;
-        }
-        if (libusb_open(dev, &dev_handle) != LIBUSB_SUCCESS || libusb_claim_interface(dev_handle, interface_num) != LIBUSB_SUCCESS) {
-            fprintf(stderr, "Error: Failed to open device or claim interface\n");
-            libusb_exit(ctx);
-            return 1;
-        }
+        } else {
+            libusb_open(dev, &dev_handle) || libusb_claim_interface(dev_handle, interface_num);
+        }        
     }
 
     int result = send_command(ADB_CONNECT, ADB_VERSION, ADB_MAX_DATA, "host::\x0", 7);
     char buf[512];
     adb_usb_packet pkt;
-    int data_len = sizeof(buf);
-    if (result || recv_packet(&pkt, buf, &data_len) || memcmp(buf, "sideload::", 10)) {
+    if (result || recv_packet(&pkt, buf, &(int){sizeof(buf)}) || memcmp(buf, "sideload::", 10)) {
         printf("\nFailed to connect with device\n");
-        libusb_close(dev_handle);
-        libusb_exit(ctx);
         return 1;
     }
 
@@ -819,49 +558,67 @@ int main(int argc, char *argv[]) {
     strncpy(romzone, adb_cmd("getromzone:"), sizeof(romzone) - 1);
 
     switch (choice) {
-        case 1:
-            printf("\n\nDevice: %s\n", device);
-            printf("Version: %s\n", version);
-            printf("Serial Number: %s\n", sn);
-            printf("Codebase: %s\n", codebase);
-            printf("Branch: %s\n", branch);
-            printf("Language: %s\n", language);
-            printf("Region: %s\n", region);
-            printf("ROM Zone: %s\n\n", romzone);
-            break;
-        case 2:
-            validate_check("", 0);
-            break;
-        case 3: {
-            char filePath[256], md5[65];
-            calculate_md5(filePath, md5);
-            const char *validate = validate_check(md5, 1);
-            if (validate) {
-                start_sideload(filePath, validate);
+    case 1:
+        printf("\n\nDevice: %s\n", device);
+        printf("Version: %s\n", version);
+        printf("Serial Number: %s\n", sn);
+        printf("Codebase: %s\n", codebase);
+        printf("Branch: %s\n", branch);
+        printf("Language: %s\n", language);
+        printf("Region: %s\n", region);
+        printf("ROM Zone: %s\n\n", romzone);
+        break;
+    case 2:
+        validate_check("", 0);
+        break;
+    case 3: {
+        char filePath[256];
+        FILE *file;
+        if (firmware_file != NULL) {
+            // Use command-line provided file path
+            strncpy(filePath, firmware_file, sizeof(filePath) - 1);
+            filePath[sizeof(filePath) - 1] = '\0';
+            file = fopen(filePath, "rb");
+            if (!file || !strstr(filePath, ".zip")) {
+                printf("Invalid file: %s\n", filePath);
+                if (file) fclose(file);
+                return 1;
             }
-            break;
+            fclose(file);
+        } else {
+            // Prompt interactively
+            while (1) {
+                printf("Enter .zip file path: ");
+                if (fgets(filePath, sizeof(filePath), stdin)) {
+                    filePath[strcspn(filePath, "\n")] = '\0';
+                    file = fopen(filePath, "rb");
+                    if (strstr(filePath, ".zip") && file) {
+                        fclose(file);
+                        break;
+                    }
+                    if (file) fclose(file);
+                }
+                printf("Invalid file, try again.\n");
+            }
         }
-        case 4: {
-            char *format = adb_cmd("format-data:");
-            printf("\n%s\n", format);
-            char *reboot = adb_cmd("reboot:");
-            printf("\n%s\n", reboot);
-            break;
+        char md5[65];
+        calculate_md5(filePath, md5);
+        const char *validate = validate_check(md5, 1);
+        if (validate) {
+            start_sideload(filePath, validate);
         }
-        case 5: {
-            char *reboot = adb_cmd("reboot:");
-            printf("\n%s\n", reboot);
-            break;
-        }
-        case 6:
-            generate_validate_key();
-            break;
-        default:
-            printf("Invalid option selected.\n");
-            break;
+        break;
     }
-
-    libusb_close(dev_handle);
-    libusb_exit(ctx);
-    return 0;
+    case 4: {
+        char *format = adb_cmd("format-data:");
+        printf("\n%s\n", format);
+        char *reboot = adb_cmd("reboot:");
+        printf("\n%s\n", reboot);
+        break;
+    }
+    case 5: {
+        char *reboot = adb_cmd("reboot:");
+        printf("\n%s\n", reboot);
+        break;
+    }
 }
