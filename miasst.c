@@ -834,6 +834,6 @@ int main(int argc, char *argv[]) {
         default:
             printf("Invalid option selected.\n");
             break;
-    }
+    }}
 
 }
