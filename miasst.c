@@ -299,13 +299,13 @@ const char *validate_check(const char *md5, int flash) {
     EVP_DecryptFinal_ex(ctx, post_buf + plain_len, &temp_len);
     EVP_CIPHER_CTX_free(ctx);
 
+        // Parse JSON response
     char *start = strchr((char*)post_buf, '{');
     char *end = strrchr((char*)post_buf, '}');
     if (!start || !end) return NULL;
 
     memmove(post_buf, start, end - start + 1);
     post_buf[end - start + 1] = '\0';
-    // printf("Response after decryption: %s\n", post_buf); 
     json_t pool[10000];
     json_t const *parsed_json = json_create((char *)post_buf, pool, 10000);
     if (!parsed_json) return NULL;
@@ -325,17 +325,17 @@ const char *validate_check(const char *md5, int flash) {
                 FILE *fp = fopen("/sdcard/validate.key", "w");
                 if (!fp) {
                     perror("Error: Failed to open /sdcard/validate.key for writing");
-                    return validate_key; // Continue with in-memory key
+                    return validate_key;
                 }
                 size_t written = fwrite(validate_key, 1, strlen(validate_key), fp);
                 if (written != strlen(validate_key)) {
                     fprintf(stderr, "Error: Failed to write validate.key\n");
                     fclose(fp);
-                    return validate_key; // Continue with in-memory key
+                    return validate_key;
                 }
                 fclose(fp);
                 printf("Validation key saved to: /sdcard/validate.key\n");
-                return validate_key; // Return in-memory key
+                return validate_key;
             }
             return NULL;
         } else {
@@ -345,25 +345,50 @@ const char *validate_check(const char *md5, int flash) {
             return NULL;
         }
     } else {
+        // ROM listing mode
         if (json_getType(parsed_json) == JSON_OBJ) {
             json_t const *child = json_getChild(parsed_json);
             if (strcmp(json_getName(json_getSibling(child)), "Signup") == 0 || strcmp(json_getName(json_getSibling(child)), "VersionBoot") == 0) {
                 fprintf(stderr, "Error: Invalid data\n");
                 return NULL;
             }
+            const char *first_validate_key = NULL;
             while (child) {
-                child = json_getSibling(child); 
+                const char *rom_name = json_getName(child);
+                json_t const *cA = json_getProperty(parsed_json, rom_name);
+                if (cA) {
+                    json_t const *md5_prop = json_getProperty(cA, "md5");
+                    json_t const *name_prop = json_getProperty(cA, "name");
+                    json_t const *validate_prop = json_getProperty(cA, "Validate");
+                    if (md5_prop && name_prop) {
+                        printf("\n%s: %s\nmd5: %s\n", rom_name, json_getValue(name_prop), json_getValue(md5_prop));
+                        if (validate_prop) {
+                            const char *validate_key = json_getValue(validate_prop);
+                            if (validate_key && !first_validate_key) {
+                                // Save the first validation key found
+                                first_validate_key = validate_key;
+                                FILE *fp = fopen("/sdcard/validate.key", "w");
+                                if (!fp) {
+                                    perror("Error: Failed to open /sdcard/validate.key for writing");
+                                } else {
+                                    size_t written = fwrite(validate_key, 1, strlen(validate_key), fp);
+                                    if (written != strlen(validate_key)) {
+                                        fprintf(stderr, "Error: Failed to write validate.key\n");
+                                    } else {
+                                        printf("Validation key for %s saved to: /sdcard/validate.key\n", rom_name);
+                                    }
+                                    fclose(fp);
+                                }
+                            }
+                        }
+                    }
+                }
+                child = json_getSibling(child);
                 if (strcmp(json_getName(child), "Icon") == 0) {
                     break;
                 }
-                json_t const *cA = json_getProperty(parsed_json, json_getName(child));
-                if (cA) {
-                    json_t const *md5 = json_getProperty(cA, "md5");
-                    if (md5) {
-                        printf("\n%s: %s\nmd5: %s\n", json_getName(child), json_getValue(json_getProperty(cA, "name")), json_getValue(md5));
-                    } 
-                }     
             }
+            return NULL; // Preserve original return value
         }
         return NULL;
     }
