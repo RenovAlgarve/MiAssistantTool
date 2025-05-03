@@ -183,7 +183,7 @@ const char *validate_check(const char *md5, int flash) {
     const unsigned char iv[16] = { 0x30, 0x31, 0x30, 0x32, 0x30, 0x33, 0x30, 0x34, 0x30, 0x35, 0x30, 0x36, 0x30, 0x37, 0x30, 0x38 };
 
     char json_request[1024];
-    sprintf(json_request, "{\"d\":\"%s\",\"v\":\"%s\",\"c\":\"%s\",\"b\":\"%s\",\"sn\":\"%s\",\"l\":\"en-US\",\"f\":\"1\",\"options\":{\"zone\":%s},\"pkg\":\"%s\"}", device, version, codebase, branch, sn, romzone, md5);
+    sprintf(json_request, "{\"d\":\"%s\",\"v\":\"%s\",\"c\":\"%s\",\"b\":\"%s\",\"sn\":\"%s\",\"l\":\"pt\",\"f\":\"1\",\"options\":{\"zone\":%s},\"pkg\":\"%s\"}", device, version, codebase, branch, sn, romzone, md5);
 
     int len = strlen(json_request);
     int mod_len = 16 - (len % 16);
@@ -288,7 +288,7 @@ const char *validate_check(const char *md5, int flash) {
 
     int decoded_len = EVP_DecodeBlock((unsigned char*)post_buf, (unsigned char*)response_buffer, response_size);
     free(response_buffer);
-    remove("response.tmp");
+    // remove("response.tmp");
 
     ctx = EVP_CIPHER_CTX_new();
     if (!ctx) return NULL;
@@ -305,7 +305,7 @@ const char *validate_check(const char *md5, int flash) {
 
     memmove(post_buf, start, end - start + 1);
     post_buf[end - start + 1] = '\0';
-    // printf("Response after decryption: %s\n", post_buf); 
+    printf("Response after decryption: %s\n", post_buf); 
     json_t pool[10000];
     json_t const *parsed_json = json_create((char *)post_buf, pool, 10000);
     if (!parsed_json) return NULL;
@@ -319,6 +319,7 @@ const char *validate_check(const char *md5, int flash) {
                 getchar(); 
            }
             json_t const *validate = json_getProperty(pkg_rom, "Validate");
+            printf("Response of validation: %s\n", json_getValue(validate));
             return json_getValue(validate);
         } else {
             json_t const *code = json_getProperty(parsed_json, "Code");
